@@ -1,4 +1,3 @@
-# talus-machine-learning
 # Health & Fitness Insights ML System - User Guide
 
 ## Overview
