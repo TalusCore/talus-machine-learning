@@ -46,22 +46,20 @@ class HealthFitnessInsights:
         Initialize with path to the Kaggle health and fitness dataset
         
         Args:
-            reference_dataset_path: Path to the downloaded dataset
-                                   If None, will read from DATASET_PATH environment variable
+            reference_dataset_path: Path to the downloaded dataset directory or CSV file.
+                                   If None, will read from DATASET_PATH environment variable.
         """
         import os
-        from dotenv import load_dotenv
-        
-        # Load environment variables from .env file
-        load_dotenv()
         
         # If no path provided, get from environment variable
+        # NOTE: We intentionally do NOT call load_dotenv() here so that
+        # a stale .env file cannot override the path passed at runtime.
         if reference_dataset_path is None:
             reference_dataset_path = os.getenv('DATASET_PATH')
             if not reference_dataset_path:
                 raise ValueError(
                     "DATASET_PATH not provided as argument or environment variable. "
-                    "Set it in .env file or pass it to __init__"
+                    "Pass it directly to __init__ or set the DATASET_PATH env var."
                 )
         
         self.reference_data = None
@@ -76,33 +74,75 @@ class HealthFitnessInsights:
         # Load reference dataset
         self.load_reference_data(reference_dataset_path)
         
+    def _resolve_csv_path(self, path):
+        """
+        Resolve a path to an actual CSV file path.
+        
+        Handles three cases:
+          1. path is already a .csv file  → return as-is
+          2. path is a directory          → find health_fitness_dataset.csv,
+                                            or fall back to any .csv in the tree
+          3. path doesn't exist           → raise a clear error
+
+        Returns:
+            str: Absolute path to the CSV file
+        """
+        import os
+
+        path = os.path.expanduser(str(path))
+        path = os.path.abspath(path)
+
+        # Case 1: direct file path
+        if os.path.isfile(path):
+            if path.endswith('.csv'):
+                print(f"   CSV file found directly: {path}")
+                return path
+            else:
+                raise ValueError(f"Path is a file but not a CSV: {path}")
+
+        # Case 2: directory — search for the dataset CSV
+        if os.path.isdir(path):
+            TARGET_FILENAME = 'health_fitness_dataset.csv'
+
+            # First pass: look for exact filename anywhere in the tree
+            for root, dirs, files in os.walk(path):
+                if TARGET_FILENAME in files:
+                    found = os.path.join(root, TARGET_FILENAME)
+                    print(f"   Found target CSV: {found}")
+                    return found
+
+            # Second pass: fall back to any CSV in the tree
+            all_csvs = []
+            for root, dirs, files in os.walk(path):
+                for f in files:
+                    if f.endswith('.csv'):
+                        all_csvs.append(os.path.join(root, f))
+
+            if all_csvs:
+                chosen = all_csvs[0]
+                print(f"   Target CSV not found; using first CSV discovered: {chosen}")
+                if len(all_csvs) > 1:
+                    print(f"   (Other CSVs found: {all_csvs[1:]})")
+                return chosen
+
+            raise ValueError(
+                f"No CSV files found anywhere under directory: {path}\n"
+                f"Expected to find '{TARGET_FILENAME}' in the dataset directory."
+            )
+
+        # Case 3: path doesn't exist at all
+        raise ValueError(
+            f"Path does not exist: {path}\n"
+            f"Make sure kagglehub downloaded the dataset before this runs."
+        )
+
     def load_reference_data(self, path):
         """Load and preprocess the reference dataset"""
         try:
-            # Try common file formats
-            import os
-            from pathlib import Path
-            
-            # Expand user home directory if path starts with ~
-            path = os.path.expanduser(path)
-            
-            if os.path.isfile(path):
-                if path.endswith('.csv'):
-                    self.reference_data = pd.read_csv(path)
-                elif path.endswith('.xlsx'):
-                    self.reference_data = pd.read_excel(path)
-            else:
-                # Try to find CSV files in directory
-                if os.path.isdir(path):
-                    csv_files = [f for f in os.listdir(path) if f.endswith('.csv')]
-                    if csv_files:
-                        self.reference_data = pd.read_csv(os.path.join(path, csv_files[0]))
-                        print(f"Loaded: {csv_files[0]}")
-                    else:
-                        raise ValueError(f"No CSV files found in directory: {path}")
-                else:
-                    raise ValueError(f"Path does not exist: {path}")
-            
+            csv_path = self._resolve_csv_path(path)
+            print(f"Loading CSV: {csv_path}")
+            self.reference_data = pd.read_csv(csv_path)
+
             print(f"Reference dataset loaded: {self.reference_data.shape}")
             print(f"Columns: {list(self.reference_data.columns)}")
             
@@ -112,7 +152,7 @@ class HealthFitnessInsights:
                 columns=[c for c in EXCLUDE_COLS if c in self.reference_data.columns]
             )
 
-            # NOW identify column types (after dropping noise columns)
+            # Identify column types (after dropping noise columns)
             self.numeric_cols = self.reference_data.select_dtypes(
                 include=[np.number]
             ).columns.tolist()

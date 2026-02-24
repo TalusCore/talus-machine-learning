@@ -35,18 +35,36 @@ ml_model = None
 async def startup_event():
     """Load the ML model on startup"""
     import time
-    import kagglehub
     global ml_model
     try:
         print("\n" + "="*70)
         print("LOADING ML MODEL - THIS MAY TAKE 2-5 MINUTES ON FIRST RUN")
         print("="*70)
 
-        # Download at runtime — never rely on cached/env path
-        print("\n[STEP 0/3] Downloading dataset from Kaggle...")
-        dataset_path = kagglehub.dataset_download("evan65549/health-and-fitness-dataset")
-        print(f"   Dataset ready at: {dataset_path}")
-        
+        # Resolve dataset path: prefer DATASET_PATH env var, otherwise look for
+        # health_fitness_dataset.csv next to this file or in the working directory
+        dataset_path = os.getenv('DATASET_PATH')
+        if not dataset_path:
+            # Auto-discover the CSV relative to this file
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            candidates = [
+                os.path.join(base_dir, 'health_fitness_dataset.csv'),
+                os.path.join(base_dir, 'data', 'health_fitness_dataset.csv'),
+                os.path.join(os.getcwd(), 'health_fitness_dataset.csv'),
+            ]
+            for candidate in candidates:
+                if os.path.isfile(candidate):
+                    dataset_path = candidate
+                    break
+
+        if not dataset_path:
+            raise FileNotFoundError(
+                "health_fitness_dataset.csv not found. "
+                "Place it in the project root or set DATASET_PATH in your .env file."
+            )
+
+        print(f"\n[STEP 0/3] Dataset located: {dataset_path}")
+
         # Step 1: Load dataset
         start_time = time.time()
         print("\n[STEP 1/3] Loading dataset...")
@@ -135,16 +153,10 @@ async def analyze_user(user_data: UserFitnessData):
         raise HTTPException(status_code=503, detail="ML model not loaded")
     
     try:
-        # Convert Pydantic model to dictionary
         user_dict = user_data.dict()
-        
-        # Run analysis
         insights = ml_model.analyze_user(user_dict)
-        
-        # Add user_id if provided
         if user_data.user_id:
             insights['user_id'] = user_data.user_id
-        
         return insights
         
     except Exception as e:
@@ -154,12 +166,6 @@ async def analyze_user(user_data: UserFitnessData):
 async def batch_analyze(users: List[UserFitnessData]):
     """
     Batch analyze multiple users
-    
-    Args:
-        users: List of user fitness data
-        
-    Returns:
-        List of insights for all users
     """
     if ml_model is None:
         raise HTTPException(status_code=503, detail="ML model not loaded")
@@ -180,12 +186,7 @@ async def batch_analyze(users: List[UserFitnessData]):
 
 @app.get("/cluster-summary")
 async def cluster_summary():
-    """
-    Get summary of all clusters
-    
-    Returns:
-        Cluster profiles and statistics
-    """
+    """Get summary of all clusters"""
     if ml_model is None:
         raise HTTPException(status_code=503, detail="ML model not loaded")
     
@@ -202,7 +203,6 @@ async def cluster_summary():
                     }
                     for col in profile.keys()
                 }
-        
         return summary
         
     except Exception as e:
@@ -210,12 +210,7 @@ async def cluster_summary():
 
 @app.get("/metrics")
 async def available_metrics():
-    """
-    Get available metrics and their classifications
-    
-    Returns:
-        Metric names and whether higher/lower is better
-    """
+    """Get available metrics and their classifications"""
     if ml_model is None:
         raise HTTPException(status_code=503, detail="ML model not loaded")
     
@@ -229,8 +224,6 @@ async def available_metrics():
 
 if __name__ == "__main__":
     import uvicorn
-    
-    # Run with: uvicorn fastapi_ml_backend:app --reload --port 8000
     uvicorn.run(
         app,
         host="0.0.0.0",
