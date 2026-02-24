@@ -1,6 +1,2 @@
-# Install dependencies
-pip install -r requirements.txt
-
-# Set DATASET_PATH in .env (script tells you the path)
 # Run FastAPI
-python -m uvicorn main:app --reload --port 8000
+python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
