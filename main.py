@@ -42,16 +42,11 @@ async def startup_event():
         print("LOADING ML MODEL - THIS MAY TAKE 2-5 MINUTES ON FIRST RUN")
         print("="*70)
 
-        # Download dataset at runtime (Render build cache doesn't persist to runtime)
+        # Download at runtime — never rely on cached/env path
         print("\n[STEP 0/3] Downloading dataset from Kaggle...")
-        dataset_path = os.getenv('DATASET_PATH')  # Check if manually overridden
-        if not dataset_path:
-            dataset_path = kagglehub.dataset_download("evan65549/health-and-fitness-dataset")
-            os.environ['DATASET_PATH'] = dataset_path
-            print(f"   Dataset downloaded to: {dataset_path}")
-        else:
-            print(f"   Using existing DATASET_PATH: {dataset_path}")
-
+        dataset_path = kagglehub.dataset_download("evan65549/health-and-fitness-dataset")
+        print(f"   Dataset ready at: {dataset_path}")
+        
         # Step 1: Load dataset
         start_time = time.time()
         print("\n[STEP 1/3] Loading dataset...")
