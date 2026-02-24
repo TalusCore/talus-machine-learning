@@ -2,4 +2,4 @@
 pip install -r requirements.txt
 
 # Download Kaggle dataset automatically
-python download_dataset.py
+# python download_dataset.py

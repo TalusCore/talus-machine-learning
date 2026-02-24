@@ -35,16 +35,27 @@ ml_model = None
 async def startup_event():
     """Load the ML model on startup"""
     import time
+    import kagglehub
     global ml_model
     try:
         print("\n" + "="*70)
         print("LOADING ML MODEL - THIS MAY TAKE 2-5 MINUTES ON FIRST RUN")
         print("="*70)
-        
+
+        # Download dataset at runtime (Render build cache doesn't persist to runtime)
+        print("\n[STEP 0/3] Downloading dataset from Kaggle...")
+        dataset_path = os.getenv('DATASET_PATH')  # Check if manually overridden
+        if not dataset_path:
+            dataset_path = kagglehub.dataset_download("evan65549/health-and-fitness-dataset")
+            os.environ['DATASET_PATH'] = dataset_path
+            print(f"   Dataset downloaded to: {dataset_path}")
+        else:
+            print(f"   Using existing DATASET_PATH: {dataset_path}")
+
         # Step 1: Load dataset
         start_time = time.time()
         print("\n[STEP 1/3] Loading dataset...")
-        ml_model = HealthFitnessInsights()  # Will read DATASET_PATH from .env
+        ml_model = HealthFitnessInsights(dataset_path)
         load_time = time.time() - start_time
         print(f"   SUCCESS: Dataset loaded in {load_time:.1f}s")
         
