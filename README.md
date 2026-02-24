@@ -175,7 +175,7 @@ You can modify the source code to:
 ## Interpreting Struggles
 
 When the system identifies "struggles," consider:
-- **Context**: Some low percentiles might be acceptable (e.g., resting heart rate)
+- **Context**: Some low percentiles might be acceptable (e.g., average heart rate)
 - **Trends**: A single data point vs. consistent patterns
 - **Individual Goals**: What matters most to the user
 - **Medical Advice**: Always consult healthcare professionals for medical concerns

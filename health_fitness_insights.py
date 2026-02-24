@@ -15,29 +15,33 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.ensemble import IsolationForest
-from sklearn.cluster import MiniBatchKMeans  # Much lighter than KMeans
+from sklearn.cluster import MiniBatchKMeans
 import warnings
 warnings.filterwarnings('ignore')
-import gc  # garbage collector
+import gc
 
 
 class HealthFitnessInsights:
 
     NON_ACTIONABLE_COLS = {'age', 'height_cm', 'participant_id', 'bmi', 'gender'}
 
-    # Metrics where HIGHER percentile = better performance
     METRICS_HIGHER_IS_BETTER = {
         'steps_per_day', 'exercise_minutes_per_day',
         'workout_frequency_per_week', 'fitness_level'
     }
 
-    # Metrics where LOWER percentile = better performance
     METRICS_LOWER_IS_BETTER = {
-        'weight_kg', 'bmi', 'heart_rate_resting'
+        'weight_kg', 'bmi', 'avg_heart_rate'
     }
 
-    # Maximum rows to load from the CSV — reduces RAM without hurting accuracy
+
     MAX_ROWS = 50_000
+
+    # fitness_level in the dataset is a raw float (e.g. 0.04 → ~100).
+    # We store the dataset max so we can convert user input (0–100 scale)
+    # back to the raw dataset scale before analysis.
+    FITNESS_LEVEL_USER_MAX = 100.0   # what the user sends us
+    _fitness_level_dataset_max = None  # learned from the CSV at load time
 
     def __init__(self, reference_dataset_path=None):
         import os
@@ -51,7 +55,6 @@ class HealthFitnessInsights:
                 )
 
         self.reference_data = None
-        self.user_data = None
         self.scaler = StandardScaler()
         self.numeric_cols = []
         self.categorical_cols = []
@@ -79,24 +82,20 @@ class HealthFitnessInsights:
 
         if os.path.isdir(path):
             TARGET_FILENAME = 'health_fitness_dataset.csv'
-
             for root, dirs, files in os.walk(path):
                 if TARGET_FILENAME in files:
                     found = os.path.join(root, TARGET_FILENAME)
                     print(f"   Found target CSV: {found}")
                     return found
-
             all_csvs = []
             for root, dirs, files in os.walk(path):
                 for f in files:
                     if f.endswith('.csv'):
                         all_csvs.append(os.path.join(root, f))
-
             if all_csvs:
                 chosen = all_csvs[0]
                 print(f"   Using first CSV found: {chosen}")
                 return chosen
-
             raise ValueError(f"No CSV files found anywhere under directory: {path}")
 
         raise ValueError(
@@ -105,7 +104,40 @@ class HealthFitnessInsights:
         )
 
     # ------------------------------------------------------------------
-    # Data loading  — KEY MEMORY OPTIMISATIONS: downcast dtypes + row cap
+    # Fitness level scaling helpers
+    #
+    # The dataset stores fitness_level as a raw accumulating float
+    # (e.g. 0.04, 0.07 … up to the participant's max ~100+).
+    # Users submit a 0–100 score, so we learn the dataset max at load
+    # time and use it to convert both directions.
+    # ------------------------------------------------------------------
+
+    def _learn_fitness_level_scale(self):
+        """Store the dataset's max fitness_level so we can rescale user input."""
+        if 'fitness_level' in self.reference_data.columns:
+            self._fitness_level_dataset_max = float(
+                self.reference_data['fitness_level'].max()
+            )
+            print(f"   fitness_level dataset range: "
+                  f"0 – {self._fitness_level_dataset_max:.2f}  "
+                  f"(user sends 0–100, we rescale)")
+        else:
+            self._fitness_level_dataset_max = None
+
+    def _user_fitness_to_dataset_scale(self, user_value: float) -> float:
+        """Convert a user-supplied 0–100 score to the raw dataset scale."""
+        if self._fitness_level_dataset_max is None:
+            return user_value
+        return (user_value / self.FITNESS_LEVEL_USER_MAX) * self._fitness_level_dataset_max
+
+    def _dataset_fitness_to_user_scale(self, raw_value: float) -> float:
+        """Convert a raw dataset fitness_level back to 0–100 for display."""
+        if self._fitness_level_dataset_max is None or self._fitness_level_dataset_max == 0:
+            return raw_value
+        return (raw_value / self._fitness_level_dataset_max) * self.FITNESS_LEVEL_USER_MAX
+
+    # ------------------------------------------------------------------
+    # Data loading
     # ------------------------------------------------------------------
 
     def load_reference_data(self, path):
@@ -113,11 +145,9 @@ class HealthFitnessInsights:
             csv_path = self._resolve_csv_path(path)
             print(f"Loading CSV: {csv_path}")
 
-            # Read only up to MAX_ROWS rows
             self.reference_data = pd.read_csv(csv_path, nrows=self.MAX_ROWS)
             print(f"Loaded {len(self.reference_data):,} rows (cap: {self.MAX_ROWS:,})")
 
-            # Drop unused columns immediately to free RAM
             EXCLUDE_COLS = [
                 'participant_id', 'date', 'sleep_hours',
                 'water_intake_liters', 'calories_burned'
@@ -127,13 +157,14 @@ class HealthFitnessInsights:
                 inplace=True
             )
 
-            # Downcast numeric columns to float32 (halves memory vs float64)
+            # Learn fitness_level scale BEFORE any dtype conversion
+            self._learn_fitness_level_scale()
+
+            # Downcast to save RAM
             for col in self.reference_data.select_dtypes(include='float64').columns:
                 self.reference_data[col] = self.reference_data[col].astype(np.float32)
             for col in self.reference_data.select_dtypes(include='int64').columns:
                 self.reference_data[col] = self.reference_data[col].astype(np.int32)
-
-            # Convert low-cardinality string columns to category dtype
             for col in self.reference_data.select_dtypes(include='object').columns:
                 self.reference_data[col] = self.reference_data[col].astype('category')
 
@@ -192,13 +223,13 @@ class HealthFitnessInsights:
 
         df_processed[numeric_present] = self.scaler.transform(
             df_processed[numeric_present]
-        ).astype(np.float32)  # keep float32
+        ).astype(np.float32)
 
         df_processed = df_processed.fillna(0)
         return df_processed
 
     # ------------------------------------------------------------------
-    # Clustering  — KEY MEMORY OPTIMISATION: MiniBatchKMeans + sample cap
+    # Clustering
     # ------------------------------------------------------------------
 
     def _get_age_bracket(self, age):
@@ -213,7 +244,6 @@ class HealthFitnessInsights:
             return '60+'
 
     def perform_clustering(self, max_clusters=6):
-        """Cluster reference population — uses MiniBatchKMeans to stay lean."""
         print("\n=== CLUSTERING ANALYSIS (memory-optimised) ===")
 
         if 'participant_id' in self.reference_data.columns:
@@ -251,7 +281,6 @@ class HealthFitnessInsights:
                     print(f"  Skipping — not enough data")
                     continue
 
-                # Cap bracket sample to 10k rows to limit RAM
                 if len(bracket_data) > 10_000:
                     bracket_data = bracket_data.sample(10_000, random_state=42)
 
@@ -262,11 +291,9 @@ class HealthFitnessInsights:
                 if self.training_columns is None:
                     self.training_columns = df_processed.columns.tolist()
 
-                # Fixed k=4 — avoids expensive elbow-search loops
                 optimal_k = min(4, len(bracket_data) // 10)
                 optimal_k = max(optimal_k, 2)
 
-                # MiniBatchKMeans uses ~10x less RAM than KMeans
                 km_final = MiniBatchKMeans(
                     n_clusters=optimal_k,
                     random_state=42,
@@ -305,7 +332,6 @@ class HealthFitnessInsights:
                     self.cluster_profiles[bracket_label][i] = profile
                     print(f"  Cluster {i}: {len(cluster_indices)} participants")
 
-                # Free intermediate data immediately
                 del df_processed, bracket_data
                 gc.collect()
 
@@ -313,7 +339,7 @@ class HealthFitnessInsights:
         gc.collect()
 
     # ------------------------------------------------------------------
-    # Anomaly detection — KEY MEMORY OPTIMISATION: fewer estimators + small sample
+    # Anomaly detection
     # ------------------------------------------------------------------
 
     def train_anomaly_detector(self):
@@ -336,7 +362,6 @@ class HealthFitnessInsights:
                 print(f"  Skipping {bracket_label} — no data")
                 continue
 
-            # Cap sample: IsolationForest doesn't need more than 5k rows
             if len(bracket_data) > 5_000:
                 bracket_data = bracket_data.sample(5_000, random_state=42)
 
@@ -348,9 +373,9 @@ class HealthFitnessInsights:
             detector = IsolationForest(
                 contamination=0.05,
                 random_state=42,
-                n_estimators=25,   # was 50 — halves memory
-                max_samples=128,   # was 256 — halves memory again
-                n_jobs=1           # avoid forking extra processes
+                n_estimators=25,
+                max_samples=128,
+                n_jobs=1
             )
             detector.fit(df_processed)
             self.anomaly_detectors[bracket_label] = detector
@@ -364,10 +389,18 @@ class HealthFitnessInsights:
     # ------------------------------------------------------------------
 
     def analyze_user(self, user_data_dict):
+        """
+        Analyze a user's fitness data.
+
+        Expects fitness_level on a 0–100 scale (user-facing).
+        Internally converts to the raw dataset scale before ML processing,
+        then converts percentile results back to 0–100 for the response.
+        """
         print("\n" + "="*60)
         print("ANALYZING USER DATA")
         print("="*60)
 
+        # --- Sanitize numeric inputs ---
         sanitized = {}
         for k, v in user_data_dict.items():
             if k in self.numeric_cols:
@@ -377,6 +410,14 @@ class HealthFitnessInsights:
                     sanitized[k] = float(self.reference_medians.get(k, 0))
             else:
                 sanitized[k] = v
+
+        # --- Convert fitness_level from 0–100 → raw dataset scale ---
+        if 'fitness_level' in sanitized:
+            user_fitness_0_100 = sanitized['fitness_level']
+            sanitized['fitness_level'] = self._user_fitness_to_dataset_scale(user_fitness_0_100)
+            print(f"   fitness_level: {user_fitness_0_100:.1f}/100 "
+                  f"→ dataset scale {sanitized['fitness_level']:.3f}")
+
         user_data_dict = sanitized
 
         user_age = user_data_dict.get('age', self.reference_medians.get('age', 35))
@@ -493,7 +534,14 @@ class HealthFitnessInsights:
 
         recommendations = self._get_recommendations(struggles)
 
-        return {
+        # --- Convert fitness_level percentile output back to 0–100 context ---
+        # The percentile itself is already 0–100, but we include the user's
+        # original 0–100 score in the response for clarity.
+        response_fitness_level_score = (
+            user_fitness_0_100 if 'fitness_level' in sanitized else None
+        )
+
+        result = {
             'age_bracket': user_bracket,
             'cluster': int(user_cluster),
             'cluster_size': int(cluster_size),
@@ -506,6 +554,11 @@ class HealthFitnessInsights:
             'cluster_deviations': [(k, float(v)) for k, v in deviations],
             'recommendations': recommendations,
         }
+
+        if response_fitness_level_score is not None:
+            result['fitness_level_score'] = float(response_fitness_level_score)
+
+        return result
 
     # ------------------------------------------------------------------
     # Recommendations
@@ -531,11 +584,11 @@ class HealthFitnessInsights:
                 "Mix cardio, strength, and flexibility training",
                 "Start with low-impact activities if you're just beginning"
             ],
-            'heart_rate_resting': [
+            'avg_heart_rate': [
                 "Work on cardiovascular fitness through aerobic activity",
                 "Include 30+ minutes of moderate cardio 4-5 times per week",
                 "Consult with a healthcare provider for personalized advice",
-                "Track your resting heart rate to monitor improvement"
+                "Track your average heart rate to monitor improvement"
             ],
             'weight_kg': [
                 "Focus on balanced nutrition and portion control",
@@ -548,6 +601,12 @@ class HealthFitnessInsights:
                 "Increase protein intake and reduce processed foods",
                 "Aim for 150+ minutes of moderate activity per week",
                 "Track your BMI progress over time"
+            ],
+            'fitness_level': [
+                "Consistently track your workouts to build fitness over time",
+                "Aim to increase workout duration or intensity each week",
+                "Mix different activity types to improve overall fitness",
+                "Set a goal and monitor your progress monthly"
             ]
         }
         return [
