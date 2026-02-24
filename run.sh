@@ -6,4 +6,4 @@ python download_dataset.py
 
 # 3. Set DATASET_PATH in .env (script tells you the path)
 # 4. Run FastAPI
-python -m uvicorn main:app --reload --port 8000
+# python -m uvicorn main:app --reload --port 8000
