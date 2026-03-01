@@ -533,6 +533,14 @@ class HealthFitnessInsights:
                 print(f"   - Your {metric} is significantly {direction} than similar people in your demographic")
 
         recommendations = self._get_recommendations(struggles)
+        if len(recommendations) == 0:
+            recommendations = [{'metric': 'fitness', 'tips': [
+                    "Great job staying committed to your fitness routine",
+                    "Keep building strength, endurance, and flexibility over time",
+                    "Maintain the healthy habits that support your physical and mental wellness",
+                    "Continue prioritizing regular activity and balanced recovery"
+                    ]}]
+
 
         # --- Convert fitness_level percentile output back to 0–100 context ---
         # The percentile itself is already 0–100, but we include the user's
